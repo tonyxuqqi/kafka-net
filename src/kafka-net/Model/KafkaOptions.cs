@@ -9,10 +9,26 @@ namespace KafkaNet.Model
     {
         private const int DefaultResponseTimeout = 60000;
 
+        // Max Read Size---this is to prevent the huge memory allocation due to incorrect message size in the response;
+        public const int MaxReadSize = 1024 * 1024 * 32;
+
+        /// <summary>
+        /// true: Use Private Kafka--it has a secure flag in the broker information.
+        /// false: Not use private kafka
+        /// The flag impacts the Broker Stream's parser. If it's true, Broker.FromStream() will read additional int16 for secure flag.
+        /// </summary>
+        public static bool UsePrivateKafka { get; set; }
+
         /// <summary>
         /// List of Uri connections to kafka servers.  The are used to query for metadata from Kafka.  More than one is recommended.
         /// </summary>
         public List<Uri> KafkaServerUri { get; set; }
+
+        /// <summary>
+        /// only connecting to one broker
+        /// </summary>
+        public bool ConnectingOneBrokerOnly { get; set; } 
+
         /// <summary>
         /// Safely attempts to resolve endpoints from the KafkaServerUri, ignoreing all resolvable ones.
         /// </summary>
@@ -64,6 +80,7 @@ namespace KafkaNet.Model
             Log = new DefaultTraceLog();
             KafkaConnectionFactory = new DefaultKafkaConnectionFactory();
             ResponseTimeoutMs = TimeSpan.FromMilliseconds(DefaultResponseTimeout);
+            ConnectingOneBrokerOnly = true;
         }
     }
 }

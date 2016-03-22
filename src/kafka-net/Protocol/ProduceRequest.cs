@@ -56,10 +56,10 @@ namespace KafkaNet.Protocol
                                    } into tpc
                                    select tpc).ToList();
 
-            using (var message = EncodeHeader(request)
+            var message = EncodeHeader(request)
                 .Pack(request.Acks)
                 .Pack(request.TimeoutMS)
-                .Pack(groupedPayloads.Count))
+                .Pack(groupedPayloads.Count);
             {
                 foreach (var groupedPayload in groupedPayloads)
                 {
@@ -72,12 +72,12 @@ namespace KafkaNet.Protocol
                     {
 
                         case MessageCodec.CodecNone:
-                            message.Pack(Message.EncodeMessageSet(payloads.SelectMany(x => x.Messages)));
+                            Message.PackEncodedMessageSet(message, payloads.SelectMany(x => x.Messages));
                             break;
                         case MessageCodec.CodecGzip:
                             var compressedBytes = CreateGzipCompressedMessage(payloads.SelectMany(x => x.Messages));
                             Interlocked.Add(ref totalCompressedBytes, compressedBytes.CompressedAmount);
-                            message.Pack(Message.EncodeMessageSet(new[] { compressedBytes.CompressedMessage }));
+                            Message.PackEncodedMessageSet(message, new[] { compressedBytes.CompressedMessage });
                             break;
                         default:
                             throw new NotSupportedException(string.Format("Codec type of {0} is not supported.", groupedPayload.Key.Codec));
@@ -86,11 +86,12 @@ namespace KafkaNet.Protocol
 
                 var result = new KafkaDataPayload
                 {
-                    Buffer = message.Payload(),
+                    Packer = message,
+                    OutputFlag = PayloadFlag.Payload,
                     CorrelationId = request.CorrelationId,
                     MessageCount = request.Payload.Sum(x => x.Messages.Count)
                 };
-                StatisticsTracker.RecordProduceRequest(result.MessageCount, result.Buffer.Length, totalCompressedBytes);
+                StatisticsTracker.RecordProduceRequest(result.MessageCount, (int)result.Packer.Length, totalCompressedBytes);
                 return result;
             }
         }

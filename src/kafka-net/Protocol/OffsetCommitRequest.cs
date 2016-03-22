@@ -29,7 +29,7 @@ namespace KafkaNet.Protocol
         {
             if (request.OffsetCommits == null) request.OffsetCommits = new List<OffsetCommit>();
 
-            using (var message = EncodeHeader(request).Pack(request.ConsumerGroup, StringPrefixEncoding.Int16))
+            var message = EncodeHeader(request).Pack(request.ConsumerGroup, StringPrefixEncoding.Int16);
             {
                 var topicGroups = request.OffsetCommits.GroupBy(x => x.Topic).ToList();
                 message.Pack(topicGroups.Count);
@@ -54,7 +54,8 @@ namespace KafkaNet.Protocol
 
                 return new KafkaDataPayload
                 {
-                    Buffer = message.Payload(),
+                    Packer = message,
+                    OutputFlag = PayloadFlag.Payload,
                     CorrelationId = request.CorrelationId,
                     ApiKey = ApiKey
                 };

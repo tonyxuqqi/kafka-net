@@ -49,7 +49,12 @@ namespace KafkaNet.Common
 
         public static KafkaDataPayload ToPayload(this byte[] data)
         {
-            return new KafkaDataPayload {Buffer = data};
+            KafkaMessagePooledPacker packer = new KafkaMessagePooledPacker();
+            foreach (byte bytedata in data)
+            {
+                packer.Pack(bytedata);
+            }
+            return new KafkaDataPayload() { Packer = packer, OutputFlag = PayloadFlag.PayloadNoLength };
         }
 
         public static byte[] ToBytes(this string value)

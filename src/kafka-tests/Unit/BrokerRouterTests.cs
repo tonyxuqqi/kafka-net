@@ -32,7 +32,8 @@ namespace kafka_tests.Unit
             _mockPartitionSelector = _kernel.GetMock<IPartitionSelector>();
             _mockKafkaConnection1 = _kernel.GetMock<IKafkaConnection>();
             _mockKafkaConnectionFactory = _kernel.GetMock<IKafkaConnectionFactory>();
-            _mockKafkaConnectionFactory.Setup(x => x.Create(It.Is<KafkaEndpoint>(e => e.Endpoint.Port == 1), It.IsAny<TimeSpan>(), It.IsAny<IKafkaLog>(), null)).Returns(() => _mockKafkaConnection1.Object);
+            _mockKafkaConnectionFactory.Setup(x => x.Create(It.Is<KafkaEndpoint>(e => e.Endpoint.Port == 1), It.IsAny<TimeSpan>(), It.IsAny<IKafkaLog>(), null, It.IsAny<BrokerRouter>())).Returns(() => _mockKafkaConnection1.Object);
+            _mockKafkaConnectionFactory.Setup(x => x.Create(It.Is<KafkaEndpoint>(e => e.Endpoint.Port == 1), It.IsAny<TimeSpan>(), It.IsAny<IKafkaLog>(), null, null)).Returns(() => _mockKafkaConnection1.Object);
             _mockKafkaConnectionFactory.Setup(x => x.Resolve(It.IsAny<Uri>(), It.IsAny<IKafkaLog>()))
                 .Returns<Uri, IKafkaLog>((uri, log) => new KafkaEndpoint
                 {
@@ -78,14 +79,14 @@ namespace kafka_tests.Unit
             var router = new BrokerRouter(new KafkaOptions
             {
                 KafkaServerUri = new List<Uri> { new Uri("http://localhost:1") },
-                KafkaConnectionFactory = _mockKafkaConnectionFactory.Object
+                KafkaConnectionFactory = _mockKafkaConnectionFactory.Object,
             });
 
             _mockKafkaConnection1.Setup(x => x.SendAsync(It.IsAny<IKafkaRequest<MetadataResponse>>()))
                       .Returns(() => Task.Run(() => new List<MetadataResponse> { CreateMetaResponse() }));
 
             var topics = router.GetTopicMetadata(TestTopic);
-            _mockKafkaConnectionFactory.Verify(x => x.Create(It.Is<KafkaEndpoint>(e => e.Endpoint.Port == 2), It.IsAny<TimeSpan>(), It.IsAny<IKafkaLog>(), null), Times.Once());
+            _mockKafkaConnectionFactory.Verify(x => x.Create(It.Is<KafkaEndpoint>(e => e.Endpoint.Port == 1), It.IsAny<TimeSpan>(), It.IsAny<IKafkaLog>(), null, router), Times.Once());
         }
 
         #region MetadataRequest Tests...
@@ -98,7 +99,7 @@ namespace kafka_tests.Unit
 
             var result = router.GetTopicMetadata(TestTopic);
             Assert.That(result, Is.Not.Null);
-            Assert.That(routerProxy.BrokerConn0.MetadataRequestCallCount, Is.EqualTo(1));
+            Assert.That(routerProxy.BrokerConn0.MetadataRequestCallCount, Is.LessThanOrEqualTo(1));
             Assert.That(routerProxy.BrokerConn1.MetadataRequestCallCount, Is.EqualTo(1));
         }
 
@@ -132,7 +133,7 @@ namespace kafka_tests.Unit
             var result1 = router.GetTopicMetadata(TestTopic);
             var result2 = router.GetTopicMetadata(TestTopic);
 
-            Assert.That(routerProxy.BrokerConn0.MetadataRequestCallCount, Is.EqualTo(1));
+            Assert.That(routerProxy.BrokerConn0.MetadataRequestCallCount + routerProxy.BrokerConn1.MetadataRequestCallCount, Is.EqualTo(1));
             Assert.That(result1.Count, Is.EqualTo(1));
             Assert.That(result1[0].Name, Is.EqualTo(TestTopic));
             Assert.That(result2.Count, Is.EqualTo(1));
@@ -146,10 +147,10 @@ namespace kafka_tests.Unit
             var router = routerProxy.Create();
 
             router.RefreshTopicMetadata(TestTopic);
-            Assert.That(routerProxy.BrokerConn0.MetadataRequestCallCount, Is.EqualTo(1));
+            Assert.That(routerProxy.BrokerConn0.MetadataRequestCallCount + routerProxy.BrokerConn1.MetadataRequestCallCount, Is.EqualTo(1));
 
             router.RefreshTopicMetadata(TestTopic);
-            Assert.That(routerProxy.BrokerConn0.MetadataRequestCallCount, Is.EqualTo(2));
+            Assert.That(routerProxy.BrokerConn0.MetadataRequestCallCount + routerProxy.BrokerConn1.MetadataRequestCallCount, Is.EqualTo(2));
         }
         #endregion
 
@@ -185,6 +186,7 @@ namespace kafka_tests.Unit
 
             var routerProxy = new BrokerRouterProxy(_kernel);
             routerProxy.BrokerConn0.MetadataResponseFunction = () => metadataResponse;
+            routerProxy.BrokerConn1.MetadataResponseFunction = () => metadataResponse;
 
             routerProxy.Create().SelectBrokerRoute(TestTopic, 1);
         }
@@ -198,6 +200,7 @@ namespace kafka_tests.Unit
 
             var routerProxy = new BrokerRouterProxy(_kernel);
             routerProxy.BrokerConn0.MetadataResponseFunction = () => metadataResponse;
+            routerProxy.BrokerConn1.MetadataResponseFunction = () => metadataResponse;
 
 
             routerProxy.Create().SelectBrokerRoute(TestTopic, 1);
@@ -241,6 +244,7 @@ namespace kafka_tests.Unit
 
             var routerProxy = new BrokerRouterProxy(_kernel);
             routerProxy.BrokerConn0.MetadataResponseFunction = () => metadataResponse;
+            routerProxy.BrokerConn1.MetadataResponseFunction = () => metadataResponse;
 
             routerProxy.Create().SelectBrokerRoute(TestTopic);
         }
@@ -254,6 +258,7 @@ namespace kafka_tests.Unit
 
             var routerProxy = new BrokerRouterProxy(_kernel);
             routerProxy.BrokerConn0.MetadataResponseFunction = () => metadataResponse;
+            routerProxy.BrokerConn1.MetadataResponseFunction = () => metadataResponse;
 
             routerProxy.Create().SelectBrokerRoute(TestTopic);
         }

@@ -10,13 +10,16 @@ namespace KafkaNet.Protocol
         public string Name { get; set; }
         public List<Partition> Partitions { get; set; }
 
+        public Dictionary<int, List<Partition>> LeaderPartitionMap { get; set; }
+
         public static Topic FromStream(BigEndianBinaryReader stream)
         {
             var topic = new Topic
                 {
                     ErrorCode = stream.ReadInt16(),
                     Name = stream.ReadInt16String(),
-                    Partitions = new List<Partition>()
+                    Partitions = new List<Partition>(),
+                    LeaderPartitionMap = new Dictionary<int,List<Partition>>()
                 };
 
             var numPartitions = stream.ReadInt32();
@@ -25,7 +28,29 @@ namespace KafkaNet.Protocol
                 topic.Partitions.Add(Partition.FromStream(stream));
             }
 
+            topic.GenerateLeaderPartitionMapFromPartitionList();
+
             return topic;
+        }
+
+        public void GenerateLeaderPartitionMapFromPartitionList()
+        {
+            this.LeaderPartitionMap = new Dictionary<int, List<Partition>>();
+
+            for (int i = 0; i < this.Partitions.Count; i++)
+            {
+                List<Partition> partitions = null;
+                if (this.LeaderPartitionMap.ContainsKey(this.Partitions[i].LeaderId))
+                {
+                    partitions = this.LeaderPartitionMap[this.Partitions[i].LeaderId];
+                }
+                else
+                {
+                    partitions = new List<Partition>();
+                    this.LeaderPartitionMap[this.Partitions[i].LeaderId] = partitions;
+                }
+                partitions.Add(this.Partitions[i]);
+            }
         }
     }
 

@@ -1,4 +1,5 @@
-﻿using System.Collections.Concurrent;
+﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using KafkaNet.Model;
@@ -24,21 +25,157 @@ namespace KafkaNet
         private readonly KafkaMetadataProvider _kafkaMetadataProvider;
         private readonly ConcurrentDictionary<KafkaEndpoint, IKafkaConnection> _defaultConnectionIndex = new ConcurrentDictionary<KafkaEndpoint, IKafkaConnection>();
         private readonly ConcurrentDictionary<int, IKafkaConnection> _brokerConnectionIndex = new ConcurrentDictionary<int, IKafkaConnection>();
-        private readonly ConcurrentDictionary<string, Topic> _topicIndex = new ConcurrentDictionary<string, Topic>();
+        private readonly ConcurrentDictionary<string, Tuple<Topic, DateTime>> _topicIndex = new ConcurrentDictionary<string, Tuple<Topic, DateTime>>();
+        private static readonly TimeSpan MetadataTimeout = TimeSpan.FromHours(1);
+        private MetadataResponse _metadataResponse;
 
         public BrokerRouter(KafkaOptions kafkaOptions)
         {
             _kafkaOptions = kafkaOptions;
             _kafkaMetadataProvider = new KafkaMetadataProvider(_kafkaOptions.Log);
 
-            foreach (var endpoint in _kafkaOptions.KafkaServerEndpoints)
-            {
-                var conn = _kafkaOptions.KafkaConnectionFactory.Create(endpoint, _kafkaOptions.ResponseTimeoutMs, _kafkaOptions.Log, _kafkaOptions.MaximumReconnectionTimeout);
-                _defaultConnectionIndex.AddOrUpdate(endpoint, e => conn, (e, c) => conn);
-            }
+            this.CreateDefaultConnections();
 
             if (_defaultConnectionIndex.Count <= 0)
                 throw new ServerUnreachableException("None of the provided Kafka servers are resolvable.");
+        }
+        
+        /// <summary>
+        /// Create connections.
+        /// If kafkaOption.ConnectingOneBrokerOnly is true, then it will randomly pick up one endpoint and connect to it.
+        /// Otherwise, it will connect to all endpoints;
+        /// </summary>
+        private void CreateDefaultConnections(List<KafkaEndpoint> endpointsToAvoid = null)
+        {
+            // clean up existing connections;
+            foreach(var conn in this._defaultConnectionIndex.Values)
+            {
+                if (endpointsToAvoid == null)
+                {
+                    endpointsToAvoid = new List<KafkaEndpoint>();
+                }
+
+                endpointsToAvoid.Add(conn.Endpoint);
+                conn.Dispose();
+            }
+
+            this._defaultConnectionIndex.Clear();
+
+            // shuffle the endpoints so that each endpoint will get chance to be used.
+            // this is to balance the load among brokers
+            KafkaEndpoint[] endpoints = _kafkaOptions.KafkaServerEndpoints.ToArray();
+            for (int i = 0; i < endpoints.Length; i++ )
+            {
+                int next = new Random(Guid.NewGuid().GetHashCode()).Next(i, endpoints.Length);
+                KafkaEndpoint temp = endpoints[next];
+                endpoints[next] = endpoints[i];
+                endpoints[i] = temp;
+            }
+
+            foreach (var endpoint in endpoints)
+            {
+                try
+                {
+                    if(endpointsToAvoid != null && endpointsToAvoid.IndexOf(endpoint) >= 0)
+                    {
+                        continue;
+                    }
+
+                    var conn = _kafkaOptions.KafkaConnectionFactory.Create(endpoint, _kafkaOptions.ResponseTimeoutMs, _kafkaOptions.Log, _kafkaOptions.MaximumReconnectionTimeout, this);
+                    _defaultConnectionIndex.AddOrUpdate(endpoint, e => conn, (e, c) => conn);
+
+                    if (_kafkaOptions.ConnectingOneBrokerOnly)
+                    {
+                        break;
+                    }
+                }
+                catch (ServerDisconnectedException)
+                {
+                }
+            }
+
+            // no connection created, try the endpointsToAvoid endpoint as well if it's not null.
+            if (endpointsToAvoid != null && _defaultConnectionIndex.Count == 0)
+            {
+                foreach (var endpoint in endpointsToAvoid)
+                {
+                    try
+                    {
+                        var conn = _kafkaOptions.KafkaConnectionFactory.Create(endpoint, _kafkaOptions.ResponseTimeoutMs, _kafkaOptions.Log, _kafkaOptions.MaximumReconnectionTimeout, this);
+                        _defaultConnectionIndex.AddOrUpdate(endpoint, e => conn, (e, c) => conn);
+
+                        if (_kafkaOptions.ConnectingOneBrokerOnly)
+                        {
+                            break;
+                        }
+                    }
+                    catch (ServerDisconnectedException)
+                    {
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Called when server unreachable exception happens.
+        /// This will dispose the existing connections and re-create a new one by randomly pickup an endpoint.
+        /// </summary>
+        public void OnServerUnreachable(KafkaEndpoint endpoint)
+        {
+            _kafkaOptions.Log.InfoFormat("Connecting {0} failed. Try to recreate a new connection.", endpoint.ServeUri.ToString());
+            int brokerId = -1;
+            foreach (var conn in _brokerConnectionIndex)
+            {
+                if (conn.Value.Endpoint.Equals(endpoint))
+                {
+                    brokerId = conn.Key;
+                    break;
+                }
+            }
+
+            if (brokerId >= 0)
+            {
+                IKafkaConnection cachedConnection;
+                if (_brokerConnectionIndex.TryRemove(brokerId, out cachedConnection))
+                {
+                    try
+                    {
+                        cachedConnection.Dispose();
+                    }
+                    catch(InvalidOperationException e)
+                    {
+                        _kafkaOptions.Log.WarnFormat("Failed to dispose the connection {0}", e.Message);
+                    }
+                }
+            }
+
+            this.CreateDefaultConnections(new List<KafkaEndpoint>() { endpoint });
+        }
+
+        public void OnServerUnreachable()
+        {
+            List<KafkaEndpoint> endpoints = new List<KafkaEndpoint>();
+            foreach(var conn in _brokerConnectionIndex.Values)
+            {
+                try
+                {
+                    endpoints.Add(conn.Endpoint);
+                    conn.Dispose();
+                }
+                catch(InvalidOperationException e)
+                {
+                    _kafkaOptions.Log.WarnFormat("Failed to dispose the connection {0}", e.Message);
+                }
+            }
+            _brokerConnectionIndex.Clear();
+
+            this.CreateDefaultConnections(endpoints);
+
+            if(this._kafkaOptions.PartitionSelector is ServerAffinityPartitionSelector)
+            {
+                ServerAffinityPartitionSelector partitionSelector = this._kafkaOptions.PartitionSelector as ServerAffinityPartitionSelector;
+                partitionSelector.Reset(); // the current server is dead, try to connect others. 
+            }
         }
 
         /// <summary>
@@ -65,6 +202,8 @@ namespace KafkaNet
             var partition = topicMetadata.Partitions.FirstOrDefault(x => x.PartitionId == partitionId);
             if (partition == null) throw new InvalidPartitionException(string.Format("The topic:{0} does not have a partitionId:{1} defined.", topic, partitionId));
 
+            // update the connection cache
+            this.UpdateConnectionCache(this._metadataResponse, partition);
             return GetCachedRoute(topicMetadata.Name, partition);
         }
 
@@ -86,6 +225,8 @@ namespace KafkaNet
 
             var partition = _kafkaOptions.PartitionSelector.Select(cachedTopic, key);
 
+            // update the connection cache
+            this.UpdateConnectionCache(this._metadataResponse, partition);
             return GetCachedRoute(cachedTopic.Name, partition);
         }
 
@@ -106,7 +247,8 @@ namespace KafkaNet
             if (topicSearchResult.Missing.Count > 0)
             {
                 //double check for missing topics and query
-                RefreshTopicMetadata(topicSearchResult.Missing.Where(x => _topicIndex.ContainsKey(x) == false).ToArray());
+                RefreshTopicMetadata(topicSearchResult.Missing.Where(x => _topicIndex.ContainsKey(x) == false 
+                                                                    || _topicIndex[x].Item2 < DateTime.UtcNow).ToArray());
 
                 var refreshedTopics = topicSearchResult.Missing.Select(GetCachedTopic).Where(x => x != null);
                 topicSearchResult.Topics.AddRange(refreshedTopics);
@@ -132,9 +274,26 @@ namespace KafkaNet
 
                 //get the connections to query against and get metadata
                 var connections = _defaultConnectionIndex.Values.Union(_brokerConnectionIndex.Values).ToArray();
-                var metadataResponse = _kafkaMetadataProvider.Get(connections, topics);
+                try
+                {
+                    this._metadataResponse = _kafkaMetadataProvider.Get(connections, topics);
+                }
+                catch(Exception e) // connections are not reachable, try other endpoints;
+                {
+                    if (e is ServerUnreachableException || e is MetadataQueryRepeatedRetryFailureException)
+                    {
+                        this.OnServerUnreachable();
 
-                UpdateInternalMetadataCache(metadataResponse);
+                        // now try again;
+                        connections = _defaultConnectionIndex.Values.Union(_brokerConnectionIndex.Values).ToArray();
+                        this._metadataResponse = _kafkaMetadataProvider.Get(connections, topics);
+                    }
+                    else
+                    {
+                        throw;
+                    }
+                }
+                this.UpdateInternalMetadataCache(this._metadataResponse);
             }
         }
 
@@ -157,8 +316,9 @@ namespace KafkaNet
 
         private Topic GetCachedTopic(string topic)
         {
-            Topic cachedTopic;
-            return _topicIndex.TryGetValue(topic, out cachedTopic) ? cachedTopic : null;
+            Tuple<Topic, DateTime> cachedTopicWithTimeout;
+            return _topicIndex.TryGetValue(topic, out cachedTopicWithTimeout) && cachedTopicWithTimeout.Item2 > DateTime.UtcNow ? 
+                cachedTopicWithTimeout.Item1: null;
         }
 
         private BrokerRoute GetCachedRoute(string topic, Partition partition)
@@ -192,12 +352,12 @@ namespace KafkaNet
 
             return null;
         }
-        
-        private void UpdateInternalMetadataCache(MetadataResponse metadata)
-        {
 
+        // If the partition's connection is not cached, create the connection based on the partition. If the connection is different with the one in defaultConnectionIndex, the defaultConnectionIndex one will be disposed.
+        private void UpdateConnectionCache(MetadataResponse metadata, Partition partition)
+        {
             //resolve each broker
-            var brokerEndpoints = metadata.Brokers.Select(broker => new
+            var brokerEndpoints = metadata.Brokers.Where(broker => broker.BrokerId == partition.LeaderId).Select(broker => new
             {
                 Broker = broker,
                 Endpoint = _kafkaOptions.KafkaConnectionFactory.Resolve(broker.Address, _kafkaOptions.Log)
@@ -205,23 +365,51 @@ namespace KafkaNet
 
             foreach (var broker in brokerEndpoints)
             {
-                //if the connection is in our default connection index already, remove it and assign it to the broker index.
-                IKafkaConnection connection;
-                if (_defaultConnectionIndex.TryRemove(broker.Endpoint, out connection))
+                if (this._brokerConnectionIndex.ContainsKey(broker.Broker.BrokerId))
                 {
-                    UpsertConnectionToBrokerConnectionIndex(broker.Broker.BrokerId, connection);
+                    continue;
                 }
-                else
+
+                lock (this._threadLock)
                 {
-                    connection = _kafkaOptions.KafkaConnectionFactory.Create(broker.Endpoint, _kafkaOptions.ResponseTimeoutMs, _kafkaOptions.Log);
-                    UpsertConnectionToBrokerConnectionIndex(broker.Broker.BrokerId, connection);
+                    //if the connection is in our default connection index already, remove it and assign it to the broker index.
+                    IKafkaConnection connection;
+                    if (_defaultConnectionIndex.TryRemove(broker.Endpoint, out connection))
+                    {
+                        UpsertConnectionToBrokerConnectionIndex(broker.Broker.BrokerId, connection);
+                    }
+                    else
+                    {
+                        try
+                        {
+                            connection = _kafkaOptions.KafkaConnectionFactory.Create(broker.Endpoint, _kafkaOptions.ResponseTimeoutMs, _kafkaOptions.Log, null, this);
+                            UpsertConnectionToBrokerConnectionIndex(broker.Broker.BrokerId, connection);
+
+                            if (_defaultConnectionIndex.Count > 0) // dispose the connections in _defaultConnectionIndex
+                            {
+                                IKafkaConnection[] connectionsToClear = new IKafkaConnection[_defaultConnectionIndex.Count];
+                                _defaultConnectionIndex.Values.CopyTo(connectionsToClear, 0);
+                                _defaultConnectionIndex.Clear();
+                                foreach (var cnn in connectionsToClear)
+                                {
+                                    cnn.Dispose();
+                                }
+                            }
+                        }
+                        catch (ServerDisconnectedException)
+                        { }
+                    }
                 }
             }
-
+        }
+        
+        private void UpdateInternalMetadataCache(MetadataResponse metadata)
+        {
+           
             foreach (var topic in metadata.Topics)
             {
                 var localTopic = topic;
-                _topicIndex.AddOrUpdate(topic.Name, s => localTopic, (s, existing) => localTopic);
+                _topicIndex.AddOrUpdate(topic.Name, s => new Tuple<Topic, DateTime>(localTopic, DateTime.UtcNow + MetadataTimeout), (s, existing) => new Tuple<Topic, DateTime>(localTopic, DateTime.UtcNow + MetadataTimeout));
             }
         }
 

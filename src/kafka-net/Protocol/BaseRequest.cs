@@ -39,9 +39,9 @@ namespace KafkaNet.Protocol
         /// </summary>
         /// <returns>KafkaMessagePacker with header populated</returns>
         /// <remarks>Format: (hhihs) </remarks>
-        public static KafkaMessagePacker EncodeHeader<T>(IKafkaRequest<T> request)
+        public static KafkaMessagePooledPacker EncodeHeader<T>(IKafkaRequest<T> request)
         {
-            return new KafkaMessagePacker()
+            return new KafkaMessagePooledPacker()
                  .Pack(((Int16)request.ApiKey))
                  .Pack(ApiVersion)
                  .Pack(request.CorrelationId)

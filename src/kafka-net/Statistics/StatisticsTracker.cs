@@ -139,7 +139,7 @@ namespace KafkaNet.Statistics
                         {
                             SampleSize = e.Count(),
                             OldestBatchInQueue = e.Max(x => x.TotalDuration),
-                            BytesQueued = e.Sum(x => x.Payload.Buffer.Length),
+                            BytesQueued = e.Sum(x => (int)x.Payload.Packer.Length),
                             QueuedMessages = e.Sum(x => x.Payload.MessageCount),
                             QueuedBatchCount = Gauges.QueuedWriteOperation,
                         }
@@ -157,7 +157,7 @@ namespace KafkaNet.Statistics
                                                  networkWriteSampleTimespan.TotalSeconds),
                                 MessagesLastBatch = e.OrderByDescending(x => x.CompletedOnUtc).Select(x => x.Payload.MessageCount).FirstOrDefault(),
                                 MaxMessagesPerSecond = e.Max(x => x.Payload.MessageCount),
-                                BytesPerSecond = (int)(e.Sum(x => x.Payload.Buffer.Length) /
+                                BytesPerSecond = (int)(e.Sum(x => x.Payload.Packer.Length) /
                                                  networkWriteSampleTimespan.TotalSeconds),
                                 AverageWriteDuration = TimeSpan.FromMilliseconds(e.Sum(x => x.WriteDuration.TotalMilliseconds) /
                                                        completedWrites.Count),

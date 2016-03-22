@@ -4,6 +4,7 @@ using System.Diagnostics.Contracts;
 using System.IO;
 using System.Linq;
 using System.Text;
+using KafkaNet.Model;
 
 namespace KafkaNet.Common
 {
@@ -135,6 +136,12 @@ namespace KafkaNet.Common
         public byte[] ReadToEnd()
         {
             var size = (int)(base.BaseStream.Length - base.BaseStream.Position);
+            
+            if(size >= KafkaOptions.MaxReadSize)
+            {
+                throw new ApplicationException("The data is invalid,too huge memory allocation:" + size);
+            }
+
             var buffer = new byte[size];
             base.BaseStream.Read(buffer, 0, size);
             return buffer;
@@ -172,6 +179,11 @@ namespace KafkaNet.Common
         {
             if (size <= 0) { return new byte[0]; }
 
+            if (size >= KafkaOptions.MaxReadSize)
+            {
+                throw new ApplicationException("The data is invalid, too huge memory allocation:" + size);
+            }
+
             var buffer = new byte[size];
 
             base.Read(buffer, 0, size);
@@ -205,6 +217,11 @@ namespace KafkaNet.Common
             Contract.Requires(count >= 0);
             Contract.Ensures(Contract.Result<Byte[]>() != null);
             Contract.Ensures(Contract.Result<Byte[]>().Length == count);
+
+            if (count >= KafkaOptions.MaxReadSize)
+            {
+                throw new ApplicationException("The data is invalid,too huge memory allocation:" + count);
+            }
 
             var buffer = new Byte[count];
             var bytesRead = BaseStream.Read(buffer, 0, count);

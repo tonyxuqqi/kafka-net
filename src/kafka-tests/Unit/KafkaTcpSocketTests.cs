@@ -123,7 +123,7 @@ namespace kafka_tests.Unit
             using (var test = new KafkaTcpSocket(new DefaultTraceLog(), _fakeServerUrl))
             {
                 int writeSize = 0;
-                test.OnWriteToSocketAttempt += payload => writeSize = payload.Buffer.Length;
+                test.OnWriteToSocketAttempt += payload => writeSize = (int)payload.Packer.Length;
 
                 var taskResult = test.WriteAsync(4.ToBytes().ToPayload());
 
@@ -379,6 +379,34 @@ namespace kafka_tests.Unit
 
         }
 
+        [Test]
+        public void ReadShouldReconnectAndFailAfterServerDown()
+        {
+            var server = new FakeTcpServer(FakeServerPort);
+            {
+                var disconnects = 0;
+                var connects = 0;
+                server.OnClientConnected += () => Interlocked.Increment(ref connects);
+                server.OnClientDisconnected += () => Interlocked.Increment(ref disconnects);
+                var socket = new KafkaTcpSocket(new DefaultTraceLog(), _fakeServerUrl);
+                bool serverUnreachableCalled = false;
+                socket.OnServerUnreachable += (endpoint) => { serverUnreachableCalled = true; };
+
+                var resultTask = ReadFromSocketWithRetry(socket, 4);
+
+                //wait till connected
+                TaskTest.WaitFor(() => connects > 0);
+                
+                server.DropConnection();
+                server.Dispose();
+
+                //wait for OnServerUnreachable called
+                TaskTest.WaitFor(() => serverUnreachableCalled == true, 1000 * 60 * 2);
+                Assert.That(serverUnreachableCalled, Is.EqualTo(true), "serverUnreachableCalled should be called");
+                socket.Dispose();
+            }
+        }
+
         private async Task<byte[]> ReadFromSocketWithRetry(KafkaTcpSocket socket, int readSize)
         {
             byte[] buffer;
@@ -514,8 +542,9 @@ namespace kafka_tests.Unit
             using (var token = new CancellationTokenSource())
             {
                 test.OnWriteToSocketAttempt += payload => Interlocked.Increment(ref writeAttempts);
-
-                test.WriteAsync(new KafkaDataPayload { Buffer = 1.ToBytes() }, token.Token);
+                KafkaMessagePooledPacker packer = new KafkaMessagePooledPacker();
+                packer.Pack(1);
+                test.WriteAsync(new KafkaDataPayload { Packer = packer }, token.Token);
 
                 TaskTest.WaitFor(() => server.ConnectionEventcount > 0);
                 TaskTest.WaitFor(() => writeAttempts > 0);
@@ -523,8 +552,9 @@ namespace kafka_tests.Unit
                 Assert.That(writeAttempts, Is.EqualTo(1), "Socket should have attempted to write.");
 
                 //create a buffer write that will take a long time
+                packer.Pack(Enumerable.Range(0, 1000000).Select(b => (byte)b).ToArray());
                 var taskResult = test.WriteAsync(
-                    new KafkaDataPayload { Buffer = Enumerable.Range(0, 1000000).Select(b => (byte)b).ToArray() },
+                    new KafkaDataPayload { Packer = packer },
                     token.Token);
 
                 token.Cancel();
@@ -544,7 +574,9 @@ namespace kafka_tests.Unit
             {
                 test.OnReconnectionAttempt += i => connectionAttempt = i;
 
-                var taskResult = test.WriteAsync(new KafkaDataPayload { Buffer = 1.ToBytes() }, token.Token);
+                KafkaMessagePooledPacker packer = new KafkaMessagePooledPacker();
+                packer.Pack(1);
+                var taskResult = test.WriteAsync(new KafkaDataPayload { Packer = packer }, token.Token);
 
                 TaskTest.WaitFor(() => connectionAttempt > 1);
 
@@ -565,7 +597,9 @@ namespace kafka_tests.Unit
             {
                 test.OnReconnectionAttempt += i => Interlocked.Exchange(ref connectionAttempt, i);
 
-                var taskResult = test.WriteAsync(new KafkaDataPayload { Buffer = 1.ToBytes() }, token.Token);
+                KafkaMessagePooledPacker packer = new KafkaMessagePooledPacker();
+                packer.Pack(1);
+                var taskResult = test.WriteAsync(new KafkaDataPayload { Packer = packer }, token.Token);
 
                 TaskTest.WaitFor(() => connectionAttempt > 1);
 

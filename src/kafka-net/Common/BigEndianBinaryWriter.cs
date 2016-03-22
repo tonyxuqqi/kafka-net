@@ -20,16 +20,21 @@ namespace KafkaNet.Common
     /// </remarks>
     public class BigEndianBinaryWriter : BinaryWriter
     {
-        public BigEndianBinaryWriter(Stream stream)
+        public BigEndianBinaryWriter(MemoryStream stream)
             : base(stream, Encoding.UTF8)
         {
             Contract.Requires(stream != null);
         }
 
-        public BigEndianBinaryWriter(Stream stream, Boolean leaveOpen)
+        public BigEndianBinaryWriter(MemoryStream stream, Boolean leaveOpen)
             : base(stream, Encoding.UTF8, leaveOpen)
         {
             Contract.Requires(stream != null);
+        }
+
+        public byte[] GetBuffer()
+        {
+            return ((this.BaseStream) as MemoryStream).GetBuffer();
         }
 
         public override void Write(Decimal value)
@@ -123,6 +128,27 @@ namespace KafkaNet.Common
             }
 
             Write(value);
+        }
+
+        public void Write(byte[] value, int offset, int count, StringPrefixEncoding encoding)
+        {
+            if (value == null)
+            {
+                Write(-1);
+                return;
+            }
+
+            switch (encoding)
+            {
+                case StringPrefixEncoding.Int16:
+                    Write((Int16)count);
+                    break;
+                case StringPrefixEncoding.Int32:
+                    Write(count);
+                    break;
+            }
+
+            Write(value, offset, count);
         }
 
         public void Write(string value, StringPrefixEncoding encoding)

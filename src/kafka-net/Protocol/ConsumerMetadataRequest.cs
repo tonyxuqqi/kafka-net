@@ -27,11 +27,12 @@ namespace KafkaNet.Protocol
 
         private KafkaDataPayload EncodeConsumerMetadataRequest(ConsumerMetadataRequest request)
         {
-            using (var message = EncodeHeader(request).Pack(request.ConsumerGroup, StringPrefixEncoding.Int16))
+            var message = EncodeHeader(request).Pack(request.ConsumerGroup, StringPrefixEncoding.Int16);
             {
                 return new KafkaDataPayload
                 {
-                    Buffer = message.Payload(),
+                    Packer = message,
+                    OutputFlag = PayloadFlag.Payload,
                     CorrelationId = request.CorrelationId,
                     ApiKey = ApiKey
                 };

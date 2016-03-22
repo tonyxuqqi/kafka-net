@@ -44,7 +44,7 @@ namespace KafkaNet.Protocol
         {          
             if (request.Fetches == null) request.Fetches = new List<Fetch>();
 
-            using (var message = EncodeHeader(request))
+            var message = EncodeHeader(request);
             {
                 var topicGroups = request.Fetches.GroupBy(x => x.Topic).ToList();
                 message.Pack(ReplicaId)
@@ -71,7 +71,8 @@ namespace KafkaNet.Protocol
 
                 return new KafkaDataPayload
                 {
-                    Buffer = message.Payload(),
+                    OutputFlag = PayloadFlag.Payload,
+                    Packer = message,
                     CorrelationId = request.CorrelationId,
                     ApiKey = ApiKey
                 };

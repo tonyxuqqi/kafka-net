@@ -26,7 +26,7 @@ namespace KafkaNet.Protocol
         private KafkaDataPayload EncodeOffsetRequest(OffsetRequest request)
         {
             if (request.Offsets == null) request.Offsets = new List<Offset>();
-            using (var message = EncodeHeader(request))
+            var message = EncodeHeader(request);
             {
                 var topicGroups = request.Offsets.GroupBy(x => x.Topic).ToList();
                 message.Pack(ReplicaId)
@@ -51,7 +51,8 @@ namespace KafkaNet.Protocol
 
                 return new KafkaDataPayload
                 {
-                    Buffer = message.Payload(),
+                    Packer = message,
+                    OutputFlag = PayloadFlag.Payload,
                     CorrelationId = request.CorrelationId,
                     ApiKey = ApiKey
                 };

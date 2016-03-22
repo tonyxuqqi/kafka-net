@@ -24,6 +24,8 @@ namespace KafkaNet
     {
         private const int BackoffMilliseconds = 100;
 
+        private static readonly TimeSpan MetadataResponseTimeout = TimeSpan.FromMinutes(2);
+
         private readonly IKafkaLog _log;
         
         private bool _interrupted;
@@ -46,6 +48,7 @@ namespace KafkaNet
 
             var performRetry = false;
             var retryAttempt = 0;
+            const int maxRetryAttempt = 5;
             MetadataResponse metadataResponse = null;
 
             do
@@ -69,7 +72,12 @@ namespace KafkaNet
 
                 BackoffOnRetry(++retryAttempt, performRetry);
 
-            } while (_interrupted == false && performRetry);
+            } while (_interrupted == false && performRetry && retryAttempt < maxRetryAttempt);
+
+            if (retryAttempt == maxRetryAttempt)
+            {
+                throw new MetadataQueryRepeatedRetryFailureException();
+            }
 
             return metadataResponse;
         }
@@ -87,15 +95,29 @@ namespace KafkaNet
         private MetadataResponse GetMetadataResponse(IKafkaConnection[] connections, MetadataRequest request)
         {
             //try each default broker until we find one that is available
+
+            int timeoutRemainingRetry = 2;
             foreach (var conn in connections)
             {
                 try
                 {
-                    //TODO remove blocking result here!
-                    var response = conn.SendAsync(request).Result;
-                    if (response != null && response.Count > 0)
+                    while (timeoutRemainingRetry > 0)
                     {
-                        return response.FirstOrDefault();
+                        var sendTask = conn.SendAsync(request);
+                        bool finished = sendTask.Wait(MetadataResponseTimeout);
+                        if (finished)
+                        {
+                            var response = sendTask.Result;
+                            if (response != null && response.Count > 0)
+                            {
+                                return response.FirstOrDefault();
+                            }
+                        }
+                        else
+                        {
+                            _log.WarnFormat("Failed to contact Kafka server={0} due to Timeout. TimeoutRemainingRetry {1}", conn.Endpoint, timeoutRemainingRetry);
+                            timeoutRemainingRetry--;
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -209,5 +231,9 @@ namespace KafkaNet
             Status = ValidationResult.Valid;
             Message = "";
         }
+    }
+
+    public class MetadataQueryRepeatedRetryFailureException : Exception
+    {
     }
 }

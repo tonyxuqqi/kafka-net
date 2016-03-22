@@ -75,7 +75,7 @@ namespace KafkaNet.Protocol
         /// <returns>Encoded byte[] representing the collection of messages.</returns>
         public static byte[] EncodeMessageSet(IEnumerable<Message> messages)
         {
-            using (var stream = new KafkaMessagePacker())
+            using (var stream = new KafkaMessagePooledPacker())
             {
                 foreach (var message in messages)
                 {
@@ -84,6 +84,42 @@ namespace KafkaNet.Protocol
                 }
 
                 return stream.PayloadNoLength();
+            }
+        }
+
+        /// <summary>
+        /// pack the byte array returned from EncodeMessageSet
+        /// This is to avoid the memory copy.
+        /// </summary>
+        /// <param name="streamPacker">stream packer</param>
+        /// <param name="messages">messages to pack</param>
+        public static void PackEncodedMessageSet(KafkaMessagePooledPacker streamPacker, IEnumerable<Message> messages, StringPrefixEncoding encoding = StringPrefixEncoding.Int32)
+        {
+            var messageBytes = new List<KafkaMessagePooledPacker>();
+            int length = 0; // the total actual length in the streamPacker to pack the messages.
+            foreach (var message in messages)
+            {
+                KafkaMessagePooledPacker packer = PackMessage(message);
+                length += (int)packer.Length;
+                length += 12;  // for each message, we need to pack InitialMessageOffset (8 byte), the length of each message (4 byte); so we add 12 byte here
+                messageBytes.Add(packer);
+            }
+
+            switch(encoding)
+            {
+                case StringPrefixEncoding.Int32:
+                    streamPacker.Pack(length);
+                    break;
+                case StringPrefixEncoding.Int16:
+                    streamPacker.Pack((Int16)length);
+                    break;
+            }
+
+            foreach (var message in messageBytes)
+            {
+                streamPacker.Pack(InitialMessageOffset);
+                message.WriteCrcPayload(streamPacker);
+                message.Dispose();
             }
         }
 
@@ -132,7 +168,7 @@ namespace KafkaNet.Protocol
         /// </remarks>
         public static byte[] EncodeMessage(Message message)
         {
-            using(var stream = new KafkaMessagePacker())
+            using(var stream = new KafkaMessagePooledPacker())
             {
                 return stream.Pack(message.MagicNumber)
                     .Pack(message.Attribute)
@@ -140,6 +176,26 @@ namespace KafkaNet.Protocol
                     .Pack(message.Value)
                     .CrcPayload();
             }
+        }
+
+        /// <summary>
+        /// Pack the message.
+        /// Return the KafkaMessagePooledPacker object instead of the object[]. 
+        /// Because KafkaMessagePooledPacker is pooled, and thus to reduce the memory allocation.
+        /// </summary>
+        /// <param name="message">message to encode and pack</param>
+        /// <param name="packer">packer object</param>
+        /// <remarks>
+        /// Format:
+        /// Crc (Int32), MagicByte (Byte), Attribute (Byte), Key (Byte[]), Value (Byte[])
+        /// </remarks>
+        public static KafkaMessagePooledPacker PackMessage(Message message)
+        {
+            var stream = new KafkaMessagePooledPacker();
+            return stream.Pack(message.MagicNumber)
+                .Pack(message.Attribute)
+                .Pack(message.Key)
+                .Pack(message.Value);
         }
 
         /// <summary>

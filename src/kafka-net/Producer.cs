@@ -183,7 +183,7 @@ namespace KafkaNet
 
                         batch = await _asyncCollection.TakeAsync(BatchSize, BatchDelayTime, _stopToken.Token).ConfigureAwait(false);
                     }
-                    catch (OperationCanceledException ex)
+                    catch (OperationCanceledException)
                     {
                         //TODO log that the operation was canceled, this only happens during a dispose
                     }
@@ -270,8 +270,10 @@ namespace KafkaNet
                         MessagesSent = group.Select(x => x.TopicMessage).ToList()
                     };
 
+                     #pragma warning disable 4014
                     //ensure the async is released as soon as each task is completed
                     brokerSendTask.Task.ContinueWith(t => { _semaphoreMaximumAsync.Release(); }, cancellationToken);
+                     #pragma warning restore 4014
 
                     sendTasks.Add(brokerSendTask);
                 }
@@ -283,7 +285,12 @@ namespace KafkaNet
                     foreach (var task in sendTasks)
                     {
                         //TODO when we dont ask for an ACK, result is an empty list.  Which FirstOrDefault returns null.  Dont like this...
-                        task.MessagesSent.ForEach(x => x.Tcs.TrySetResult(task.Task.Result.FirstOrDefault()));
+                        var response = task.Task.Result.FirstOrDefault();
+                        task.MessagesSent.ForEach(x => x.Tcs.TrySetResult(response));
+                        if(response.Error == 3 || response.Error == 6) // unknown topic or NotLeaderForPartition, try to refresh the metadata.
+                        {
+                            BrokerRouter.RefreshTopicMetadata(response.Topic);
+                        }
                     }
                 }
                 catch

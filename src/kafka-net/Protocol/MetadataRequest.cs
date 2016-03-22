@@ -37,13 +37,14 @@ namespace KafkaNet.Protocol
         {
             if (request.Topics == null) request.Topics = new List<string>();
 
-            using (var message = EncodeHeader(request)
+            var message = EncodeHeader(request)
                 .Pack(request.Topics.Count)
-                .Pack(request.Topics, StringPrefixEncoding.Int16))
+                .Pack(request.Topics, StringPrefixEncoding.Int16);
             {
                 return new KafkaDataPayload
                 {
-                    Buffer = message.Payload(),
+                    Packer = message,
+                    OutputFlag = PayloadFlag.Payload,
                     CorrelationId = request.CorrelationId,
                     ApiKey = ApiKey
                 };
